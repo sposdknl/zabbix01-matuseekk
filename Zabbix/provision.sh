@@ -1,63 +1,51 @@
 #!/bin/bash
 
-DB_PASSWORD="zabbix_db_password"
-DB_USER="zabbix_user"
-DB_NAME="zabbix_db"
-ZABBIX_VERSION="7.0"
+# Aktualizace systému
+sudo apt update -y && sudo apt upgrade -y
 
-echo "=== Zabbix Automatizovaná Instalace pro Debian ==="
+# Instalace základních nástrojů
+sudo apt install -y wget curl vim gnupg
 
-echo "Updating the system..."
-sudo apt update && sudo apt upgrade -y
-
-echo "Installing dependencies..."
-sudo apt install -y wget curl gnupg2 lsb-release software-properties-common locales
-
-echo "Configuring language locales..."
-sudo sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen
-sudo locale-gen en_US.UTF-8
-sudo update-locale LANG=en_US.UTF-8
-
-echo "Adding Zabbix repository..."
-wget https://repo.zabbix.com/zabbix/$ZABBIX_VERSION/debian/pool/main/z/zabbix-release/zabbix-release_$ZABBIX_VERSION-1+debian$(lsb_release -rs)_all.deb
-sudo dpkg -i zabbix-release_$ZABBIX_VERSION-1+debian$(lsb_release -rs)_all.deb
-sudo apt update
-
-echo "Installing Zabbix server, frontend, and agent..."
-sudo apt install -y zabbix-server-mysql zabbix-frontend-php zabbix-apache-conf zabbix-agent
-
-echo "Installing MariaDB..."
-sudo apt install -y mariadb-server mariadb-client
+# Instalace MySQL serveru (MariaDB)
+sudo apt install -y mariadb-server
 sudo systemctl start mariadb
 sudo systemctl enable mariadb
 
-echo "Configuring MariaDB..."
-sudo mysql -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
-sudo mysql -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
-sudo mysql -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
+# Konfigurace databáze pro Zabbix
+sudo mysql -e "CREATE DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
+sudo mysql -e "CREATE USER 'zabbix'@'localhost' IDENTIFIED BY 'zabbix_password';"
+sudo mysql -e "GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';"
+sudo mysql -e "SET GLOBAL log_bin_trust_function_creators = 1;"
 sudo mysql -e "FLUSH PRIVILEGES;"
 
-echo "Checking if Zabbix schema file exists..."
-SCHEMA_FILE="/usr/share/doc/zabbix-server-mysql/create.sql.gz"
-if [ ! -f "$SCHEMA_FILE" ]; then
-  echo "Schema file not found, downloading from Zabbix CDN..."
-  wget https://cdn.zabbix.com/zabbix/sources/stable/$ZABBIX_VERSION/schema.sql.gz -O /tmp/create.sql.gz
-  SCHEMA_FILE="/tmp/create.sql.gz"
-fi
+# Přidání Zabbix 7.0 LTS repository
+wget https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_7.0-1+debian12_all.deb
+sudo dpkg -i zabbix-release_7.0-1+debian12_all.deb
+sudo apt update -y
 
-echo "Importing Zabbix database schema..."
-zcat $SCHEMA_FILE | mysql -u$DB_USER -p$DB_PASSWORD $DB_NAME
+# Instalace Zabbix serveru, frontend, Apache a PHP
+sudo apt install -y zabbix-server-mysql zabbix-frontend-php zabbix-apache-conf zabbix-sql-scripts zabbix-agent2
+sudo apt install -y apache2 php php-mbstring php-gd php-xml php-bcmath
 
-echo "Configuring Zabbix server..."
-sudo sed -i "s/^# DBPassword=.*/DBPassword=$DB_PASSWORD/" /etc/zabbix/zabbix_server.conf
-sudo sed -i "s/^# DBName=.*/DBName=$DB_NAME/" /etc/zabbix/zabbix_server.conf
+# Import Zabbix databázové struktury
+sudo zcat /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -pzabbix_password zabbix
 
-echo "Configuring PHP timezone..."
-sudo sed -i "s/^# php_value\[date.timezone\] = .*/php_value\[date.timezone\] = Europe\/Prague/" /etc/zabbix/apache.conf
+# Disable log_bin_trust_function_creators option after importing database schema.
+sudo mysql -e "SET GLOBAL log_bin_trust_function_creators = 0;"
 
-echo "Restarting services..."
-sudo systemctl restart zabbix-server zabbix-agent apache2
-sudo systemctl enable zabbix-server zabbix-agent apache2
+# Konfigurace Zabbix serveru
+sudo sed -i 's/# DBPassword=/DBPassword=zabbix_password/' /etc/zabbix/zabbix_server.conf
 
-echo "Installation completed. Access the Zabbix frontend at http://<your-ip>/zabbix"
-echo "Default credentials: Admin / zabbix"
+# Spuštění Zabbix serveru a agenta
+sudo systemctl restart zabbix-server zabbix-agent2 apache2
+sudo systemctl enable zabbix-server zabbix-agent2 apache2
+
+# Konfigurace PHP pro Zabbix frontend
+sudo sed -i 's/^max_execution_time = .*/max_execution_time = 300/' /etc/php/7.4/apache2/php.ini
+sudo sed -i 's/^memory_limit = .*/memory_limit = 128M/' /etc/php/7.4/apache2/php.ini
+sudo sed -i 's/^post_max_size = .*/post_max_size = 16M/' /etc/php/7.4/apache2/php.ini
+sudo sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 2M/' /etc/php/7.4/apache2/php.ini
+sudo sed -i 's/^;date.timezone =.*/date.timezone = Europe\/Prague/' /etc/php/7.4/apache2/php.ini
+
+# Restart Apache pro načtení změn
+sudo systemctl restart apache2
